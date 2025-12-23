@@ -10,9 +10,11 @@ clickhouse_server   clickhouse/clickhouse-server:latest              "/entrypoin
 pg18_clickhouse     sjksingh/postgres-18-pgclickhouse-cedar:latest   "/custom-entrypoint.…"   postgres     4 hours ago   Up 4 hours (healthy)   0.0.0.0:5434->5432/tcp, [::]:5434->5432/tcp
 ```
 
-# 1 - Make sure table exists.. 
+# 1 - Make sure table exists & empty
 ```
 docker exec -it clickhouse_server clickhouse-client --query "show create table uk_price_paid format Pretty";
+docker exec -it clickhouse_server clickhouse-client --query "select count(*) from uk_price_paid";
+
 ```
 
 # 1.1 - ingest data into clickhouse. 
