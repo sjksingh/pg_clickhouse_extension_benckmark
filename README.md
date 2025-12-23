@@ -171,6 +171,22 @@ docker exec -it \
   -c "SELECT count(*) FROM uk_price_paid_pg;"
 ```
 
+Check count on table using pg_clickhouse extenision & FDW
+
+```PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres << 'SQL'
+\det uk_price_paid
+;
+SQL
+```
+
+```
+PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres << 'SQL'
+SELECT count(1) from uk_price_paid
+;
+SQL
+```
+
+
 Create index on postgres HEAP table... 
 ```
 PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
