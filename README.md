@@ -1,6 +1,6 @@
 OLAP Benchmark : ClickHouse vs Cedar vs PostgreSQL
 
-Once docker-compose is completed 
+Once docker-compose is up and running... 
 
 ```
 docker-compose ps -a
