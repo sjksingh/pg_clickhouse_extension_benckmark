@@ -109,6 +109,7 @@ SQL
 ```
 
 ```
+PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
 INSERT INTO uk_price_paid_pg
 SELECT
     price,
@@ -126,6 +127,7 @@ SELECT
     district,
     county
 FROM uk_price_paid;
+SQL
 ```
 
 Verify. This should return 30729146 rows  
@@ -136,4 +138,40 @@ docker exec -it \
   pg18_clickhouse \
   psql -U postgres -d postgres \
   -c "SELECT count(*) FROM uk_price_paid_pg;"
+```
+
+Create index on postgres HEAP table... 
+```
+PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+-- Create optimal indexes for analytical queries
+CREATE INDEX idx_uk_price_paid_pg_date ON uk_price_paid_pg(date);
+CREATE INDEX idx_uk_price_paid_pg_town ON uk_price_paid_pg(town);
+CREATE INDEX idx_uk_price_paid_pg_type ON uk_price_paid_pg(type);
+CREATE INDEX idx_uk_price_paid_pg_postcode ON uk_price_paid_pg(postcode1, postcode2);
+CREATE INDEX idx_uk_price_paid_pg_date_type ON uk_price_paid_pg(date, type);
+CREATE INDEX idx_uk_price_paid_pg_town_date ON uk_price_paid_pg(town, date);
+CREATE INDEX idx_uk_price_paid_pg_type_date_price ON uk_price_paid_pg(type, date, price);
+CREATE INDEX idx_uk_price_paid_pg_county_type_date ON uk_price_paid_pg(county, type, date) WHERE county IS NOT NULL;
+--- for aggregations
+CREATE INDEX idx_uk_price_paid_pg_county_town ON uk_price_paid_pg(county, town);
+
+-- Analyze for query planner
+ANALYZE uk_price_paid_pg;
+
+-- Check the result
+SELECT COUNT(*) FROM uk_price_paid_pg;
+SQL
+```
+
+
+
+Create indexes on Cedar database... 
+```
+PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE INDEX IF NOT EXISTS idx_cedar_date ON uk_price_paid_ingest(date);
+CREATE INDEX IF NOT EXISTS idx_cedar_town ON uk_price_paid_ingest(town);
+CREATE INDEX IF NOT EXISTS idx_cedar_type ON uk_price_paid_ingest(type);
+CREATE INDEX IF NOT EXISTS idx_cedar_date_type ON uk_price_paid_ingest(date, type);
+CREATE INDEX IF NOT EXISTS idx_cedar_town_date ON uk_price_paid_ingest(town, date);
+SQL
 ```
