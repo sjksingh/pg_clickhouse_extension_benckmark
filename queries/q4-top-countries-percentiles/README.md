@@ -100,7 +100,7 @@ Row-based, modern MVCC
 
 Minimal indexing
 
-```
+```sql
 EXPLAIN (ANALYZE)
 WITH filtered AS (
     SELECT *
@@ -151,7 +151,7 @@ PostgreSQL 18
 
 pg_clickhouse FDW
 
-```
+```sql
 EXPLAIN (ANALYZE, BUFFERS)
 WITH filtered AS (
     SELECT *
@@ -203,7 +203,7 @@ MergeTree
 
 Columnar + vectorized execution
 
-```
+```sql
 EXPLAIN PIPELINE
 WITH top_counties AS (
     SELECT county
