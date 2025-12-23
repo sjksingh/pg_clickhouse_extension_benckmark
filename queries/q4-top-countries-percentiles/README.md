@@ -1,52 +1,48 @@
-# Query 4 – Top-K Counties with Percentiles
+# Query 4 – Percentiles and Top Counties Analytics
 
 ## Purpose
 
-This query benchmarks **complex analytics** combining:
+This query benchmarks **multi-stage aggregation with joins and percentiles**:
 
-- Top-K subqueries (`LIMIT 10`)
-- Join between derived set and large fact table
-- Percentile computation (`PERCENTILE_CONT` / `quantileTDigest`)
-- Multi-column group-by and ordered results
+- Aggregation on top N counties
+- Use of `PERCENTILE_CONT` / `quantileTDigest`
+- Multi-column grouping (`county × type`)
+- Ordered output on grouped keys
 
 This pattern is common in:
 
-- Regional analytics dashboards
-- Advanced BI reports
-- Statistical summaries with percentiles
-- Performance comparison of OLAP engines
+- Real estate analytics dashboards
+- Top-N reporting
+- Percentile-based price analysis
 
 ---
 
 ## Query intent (logical)
 
-> For the top 10 counties by transaction volume since 2020, compute **per property type**:
-
-- Total transactions
-- Average price
-- Percentiles (25%, 50%, 75%, 95%)
+> For the top 10 counties by transaction count since 2020, compute transaction counts, average price, and percentile breakdowns by property type.
 
 ---
 
 ## What this query stresses
 
-- Materialization of derived sets (top-K)
-- Join performance with large fact table
-- Windowed percentile aggregation
-- Executor and buffer management under high cardinality
-- Differences between exact vs approximate percentile calculation
+Compared to Queries 1–3, this query adds:
 
-This query is intentionally **high-stress**, exposing the real differences between execution architectures.
+- **CTEs and multi-stage joins**
+- Percentile calculation (analytic window aggregates)
+- Larger intermediate row sets for top-N selection
+- Sorting and memory management for aggregated results
+- Row vs column engine differences in handling percentiles
+
+This highlights **execution architecture differences**, not SQL expressiveness.
 
 ---
 
 ## PostgreSQL – Native HEAP
 
 **Engine**
-
 - PostgreSQL 18.1
-- B-tree indexes: `(county, type, date)`
-- Full MVCC visibility checks
+- Heap storage
+- B-tree indexes on `(county, type, date)`
 
 ### SQL
 
@@ -74,23 +70,28 @@ INNER JOIN top_counties tc ON p.county = tc.county
 WHERE p.date >= '2020-01-01'
 GROUP BY p.county, p.type
 ORDER BY p.county, p.type;
+
+
 Observed plan highlights
-Hash join between top-K CTE and main table
 
-External merge sort on (county, type) → temp spill ~77 MB
+Parallel index-only scan over top counties
 
-Heavy buffer usage (~4.2M reads)
+Hash join for CTE → main table
 
-Parallel partial + final aggregates
+GroupAggregate with percentile computation
 
-JIT compilation for aggregate expressions
+External merge sort for final ordering
+
+Heavy buffer usage and temp file writes
 
 📄 Full plan: postgres-q4.plan.txt
 ⏱ Execution time: ~4.3 s
 
-Correct, robust, but heavy on executor and temp I/O.
+PostgreSQL HEAP handles correctness but pays for join, grouping, and percentile calculations at large scale.
+
 
 CedarDB
+
 Engine
 
 CedarDB v2025-12-19
@@ -99,15 +100,12 @@ Row-based, modern MVCC
 
 Minimal indexing
 
-SQL
-sql
-Copy code
+```
 EXPLAIN (ANALYZE)
 WITH filtered AS (
     SELECT *
     FROM uk_price_paid_ingest
-    WHERE county IS NOT NULL
-      AND date >= '2020-01-01'
+    WHERE county IS NOT NULL AND date >= '2020-01-01'
 ),
 top_counties AS (
     SELECT county
@@ -129,36 +127,36 @@ FROM filtered p
 JOIN top_counties tc USING (county)
 GROUP BY p.county, p.type
 ORDER BY p.county, p.type;
+```
 Observed plan highlights
-Single scan of the fact table
+
+Single table scan of filtered dataset
 
 In-memory group-by
 
-Hash join
+Integrated percentile operator
 
-Percentile computation integrated in memory
-
-Minimal IO and no spill
+Minimal buffer overhead
 
 📄 Full plan: cedar-q4.plan.txt
-⏱ Execution time: ~913 ms
+⏱ Execution time: ~0.9 s
 
-CedarDB handles multi-stage analytics efficiently without executor drag.
+CedarDB shows strong performance even for multi-stage percentile queries due to low executor and MVCC overhead.
 
-##PostgreSQL + pg_clickhouse (FDW Pushdown)
+PostgreSQL + pg_clickhouse (FDW Pushdown)
+
 Engine
 
-PostgreSQL 18 + pg_clickhouse FDW
+PostgreSQL 18
 
-SQL
-sql
-Copy code
+pg_clickhouse FDW
+
+```
 EXPLAIN (ANALYZE, BUFFERS)
 WITH filtered AS (
     SELECT *
     FROM uk_price_paid
-    WHERE county IS NOT NULL
-      AND date >= '2020-01-01'
+    WHERE county IS NOT NULL AND date >= '2020-01-01'
 ),
 top_counties AS (
     SELECT county
@@ -180,38 +178,37 @@ FROM filtered p
 JOIN top_counties tc USING (county)
 GROUP BY p.county, p.type
 ORDER BY p.county, p.type;
+```
+
 Observed plan highlights
-Filtered CTE materialized in PostgreSQL
 
-Join + percentile done in PostgreSQL
+Aggregation pushed to ClickHouse
 
-FDW pushdown handles raw table scan
+PostgreSQL executes join + window functions
 
-Significant temp I/O (~83 MB) and disk usage
+Significant FDW cost if result set is large
 
 📄 Full plan: fdw-q4.plan.txt
 ⏱ Execution time: ~20.7 s
 
-Demonstrates FDW limits on multi-stage analytics with percentiles.
+FDW demonstrates orchestration cost for multi-stage percentile queries with large intermediate sets.
 
 ClickHouse
+
 Engine
 
 ClickHouse 25.12
 
 MergeTree
 
-Columnar + vectorized + pipeline execution
+Columnar + vectorized execution
 
-SQL
-sql
-Copy code
+```
 EXPLAIN PIPELINE
 WITH top_counties AS (
     SELECT county
     FROM uk_price_paid
-    WHERE county IS NOT NULL
-      AND date >= '2020-01-01'
+    WHERE county IS NOT NULL AND date >= '2020-01-01'
     GROUP BY county
     ORDER BY COUNT(*) DESC
     LIMIT 10
@@ -228,42 +225,45 @@ SELECT
 FROM uk_price_paid AS p
 INNER JOIN top_counties AS tc ON p.county = tc.county
 WHERE p.date >= '2020-01-01'
-GROUP BY
-    p.county,
-    p.type
-ORDER BY
-    p.county ASC,
-    p.type ASC;
+GROUP BY p.county, p.type
+ORDER BY p.county ASC, p.type ASC;
+```
+
 Observed pipeline highlights
-Full pipeline aggregation + join
 
-Vectorized percentile computation with TDigest
+Parallel MergeTree scan
 
-Minimal memory overhead
+Vectorized aggregation with TDigest for percentiles
 
-Fast multi-stage processing
+Multi-stage join + sort pipeline
+
+Fully pipelined execution
 
 📄 Full pipeline: clickhouse-q4.plan.txt
 ⏱ Execution time: ~27 ms
 
-Columnar pipeline and approximate TDigest aggregation make ClickHouse extremely fast.
+ClickHouse excels at multi-stage percentile + top-N queries via columnar vectorized pipelines.
 
-Summary (qualitative)
-Engine	Strength shown in Query 4	Main cost driver
-PostgreSQL HEAP	Full SQL, exact percentiles	Executor + temp I/O + window overhead
-CedarDB	Fast in-memory analytics	Scan + hash join
-pg_clickhouse (FDW)	Full SQL via pushdown, limited aggregation	Temp spill + CTE materialization
-ClickHouse	High-throughput percentiles + top-K	CPU-efficient columnar + TDigest pipelines
+
+| Engine              | Strength in Query 4                        | Primary Cost Driver                 |
+| ------------------- | ------------------------------------------ | ----------------------------------- |
+| PostgreSQL HEAP     | Correct, full percentile computation       | HashJoin + temp sort + buffer usage |
+| CedarDB             | In-memory percentile aggregation           | Scan only                           |
+| pg_clickhouse (FDW) | Orchestrates ClickHouse pushdown           | Join + large intermediate set       |
+| ClickHouse          | Columnar, vectorized percentile throughput | CPU-efficient pipeline              |
+
+
 
 Key takeaway
-Query 4 clearly illustrates:
 
-Top-K and percentile analytics are expensive in row-based systems
+Query 4 highlights architectural differences under multi-stage percentile and top-N workloads:
 
-CedarDB minimizes executor overhead, producing fast analytics
+Row engines (PostgreSQL HEAP) pay for sorting, join, and percentile aggregation
 
-FDW pushdown can be slower than native execution due to temp materialization
+CedarDB reduces executor/MVCC cost while keeping correctness
 
-ClickHouse columnar engine achieves extreme throughput with pipelined, approximate aggregates
+FDW pushdown shifts aggregation, but PostgreSQL overhead remains for joins
 
-This is the climax of the benchmark suite, showing the largest architectural differences between engines.
+ClickHouse executes fully vectorized pipelines with minimal overhead
+
+This query is the culmination of all previous patterns, demonstrating joins, percentiles, top-N selection, and pipeline efficiency.
