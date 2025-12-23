@@ -1,5 +1,16 @@
 OLAP Benchmark : ClickHouse vs Cedar vs PostgreSQL
 
+Lets built a comparison lab with same data + same cardinality and same distributions
+
+```
+Different execution engines
+
+1 - Columnar (ClickHouse)
+2 - Row-based + modern MVCC (CedarDB)
+3 - PostgreSQL executor pushing down to ClickHouse (pg_clickhouse)
+4 - PostgreSQL classic HEAP
+```
+
 Once docker-compose is up and running... 
 
 ```
