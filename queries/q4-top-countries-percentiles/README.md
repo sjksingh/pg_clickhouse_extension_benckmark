@@ -145,7 +145,7 @@ Minimal IO and no spill
 
 CedarDB handles multi-stage analytics efficiently without executor drag.
 
-PostgreSQL + pg_clickhouse (FDW Pushdown)
+##PostgreSQL + pg_clickhouse (FDW Pushdown)
 Engine
 
 PostgreSQL 18 + pg_clickhouse FDW
