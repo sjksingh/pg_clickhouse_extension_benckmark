@@ -1,86 +1,180 @@
-OLAP Benchmark : ClickHouse vs Cedar vs PostgreSQL
+# OLAP Execution Benchmark
 
-Lets built a comparison lab with same data + same cardinality and same distributions
+### ClickHouse vs CedarDB vs PostgreSQL (HEAP & pg_clickhouse)
+
+## TL;DR
+
+This repository provides a **fully reproducible OLAP comparison lab** using the **same 30M-row dataset**, identical schema, and identical query shapes across four different execution engines:
+
+1. **ClickHouse** – Columnar OLAP engine
+2. **CedarDB** – Row-based engine with modern MVCC
+3. **PostgreSQL + pg_clickhouse** – Executor pushdown into ClickHouse
+4. **PostgreSQL HEAP** – Classic row-store with B-tree indexes
+
+**No query rewrites.
+No pre-aggregations.
+No data skew.**
+
+Only the **execution engine** differs.
+
+---
+
+## Why this repo exists
+
+Most database benchmarks fail in at least one way:
+
+* Different schemas per engine
+* Different data distributions
+* Pre-aggregated tables
+* Engine-specific SQL rewrites
+* Non-reproducible ingestion pipelines
+
+This lab is intentionally **boring and honest**:
+
+* Same dataset
+* Same cardinality
+* Same distributions
+* Same SQL semantics
+
+The goal is to **observe execution behavior**, not win a benchmark.
+
+---
+
+## Dataset
+
+**UK Price Paid dataset**
+
+* ~30.7 million rows
+* Real-world skew
+* Wide rows
+* High-cardinality dimensions
+* Time-series friendly
+
+Row count used throughout the lab:
 
 ```
-Different execution engines
-
-1 - Columnar (ClickHouse)
-2 - Row-based + modern MVCC (CedarDB)
-3 - PostgreSQL executor pushing down to ClickHouse (pg_clickhouse)
-4 - PostgreSQL classic HEAP
+30,729,146 rows
 ```
 
-Once docker-compose is up and running... 
+---
+
+## Architecture Overview
 
 ```
+          ┌───────────────┐
+          │  ClickHouse   │  (Columnar OLAP)
+          │ uk_price_paid │
+          └───────┬───────┘
+                  │ CSV stream
+                  ▼
+┌───────────────┐     ┌───────────────┐
+│  CedarDB      │     │ PostgreSQL    │
+│ row + MVCC    │     │ HEAP + index  │
+│ ingest table  │     │ native table  │
+└───────────────┘     └───────────────┘
+          ▲
+          │ FDW / pushdown
+          │
+    ┌───────────────┐
+    │ PostgreSQL    │
+    │ pg_clickhouse │
+    └───────────────┘
+
+```
+
+---
+
+## Engines Compared
+
+| Engine                     | Storage   | Execution        |
+| -------------------------- | --------- | ---------------- |
+| ClickHouse                 | Columnar  | Vectorized       |
+| CedarDB                    | Row-based | Modern MVCC      |
+| PostgreSQL + pg_clickhouse | Hybrid    | Pushdown         |
+| PostgreSQL HEAP            | Row-based | Classic executor |
+
+---
+
+## Requirements
+
+* Docker
+* Docker Compose
+* ~15GB free disk
+* ~8GB RAM recommended
+
+---
+
+## Start the Lab
+
+```bash
+docker-compose up -d
 docker-compose ps -a
-NAME                IMAGE                                            COMMAND                  SERVICE      CREATED       STATUS                 PORTS
-cedardb_server      cedardb/cedardb:latest                           "/usr/local/bin/dock…"   cedardb      4 hours ago   Up 4 hours             0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
-clickhouse_server   clickhouse/clickhouse-server:latest              "/entrypoint.sh"         clickhouse   4 hours ago   Up 4 hours (healthy)   0.0.0.0:8123->8123/tcp, [::]:8123->8123/tcp, 0.0.0.0:9000->9000/tcp, [::]:9000->9000/tcp, 9009/tcp
-pg18_clickhouse     sjksingh/postgres-18-pgclickhouse-cedar:latest   "/custom-entrypoint.…"   postgres     4 hours ago   Up 4 hours (healthy)   0.0.0.0:5434->5432/tcp, [::]:5434->5432/tcp
 ```
 
-# 1 - Make sure table exists & empty
-```
-docker exec -it clickhouse_server clickhouse-client --query "show create table uk_price_paid format Pretty";
-docker exec -it clickhouse_server clickhouse-client --query "select count(*) from uk_price_paid";
+Expected services:
 
 ```
+cedardb_server
+clickhouse_server
+pg18_clickhouse
+```
 
-# 2 - ingest data into clickhouse. 
+---
 
+## Step 1 – Validate ClickHouse baseline
+
+```bash
+docker exec -it clickhouse_server \
+  clickhouse-client --query "SHOW CREATE TABLE uk_price_paid FORMAT Pretty"
+
+docker exec -it clickhouse_server \
+  clickhouse-client --query "SELECT count() FROM uk_price_paid"
+```
+
+Expected result:
+
+```
+30729146
+```
+
+---
+
+## Step 2 – Ingest data into ClickHouse
+
+```bash
 bash 1-clickhouse-ingest.sh
-
-```
-#!/bin/bash
-# clickhouse_ingest.sh
-# Stream UK price paid CSV into ClickHouse
-
-set -euo pipefail
-
-# Config
-CLICKHOUSE_CONTAINER=${CLICKHOUSE_CONTAINER:-clickhouse_server}
-CSV_GZ_FILE=${CSV_GZ_FILE:-uk_price_paid.csv.gz}
-TABLE=${TABLE:-default.uk_price_paid}
-
-echo "Starting ClickHouse ingestion..."
-echo "Container: $CLICKHOUSE_CONTAINER"
-echo "CSV file: $CSV_GZ_FILE"
-echo "Table: $TABLE"
-
-# Stream CSV.gz directly into ClickHouse
-zcat "$CSV_GZ_FILE" | docker exec -i "$CLICKHOUSE_CONTAINER" \
-    clickhouse-client --query "INSERT INTO $TABLE FORMAT CSV"
-
-echo "ClickHouse ingestion completed!"
 ```
 
-Verify - should return 30 millon rows 
+Script streams compressed CSV directly:
 
-```
-docker exec -it clickhouse_server clickhouse-client --query "SELECT count() FROM uk_price_paid"
-```
-
-# 3 - Check count on table using pg_clickhouse extenision & FDW
-
-```PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres << 'SQL'
-\det uk_price_paid
-;
-SQL
+```bash
+zcat uk_price_paid.csv.gz | docker exec -i clickhouse_server \
+  clickhouse-client --query "INSERT INTO default.uk_price_paid FORMAT CSV"
 ```
 
-```
-PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres << 'SQL'
-SELECT count(1) from uk_price_paid
-;
-SQL
+Verify:
+
+```bash
+docker exec -it clickhouse_server \
+  clickhouse-client --query "SELECT count() FROM uk_price_paid"
 ```
 
-# 4 - Create the ingest table in CedarDB (minimal, no indexes)
+---
+
+## Step 3 – Validate pg_clickhouse FDW
+
+```bash
+PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres \
+  -c "SELECT count(*) FROM uk_price_paid;"
 ```
-PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
--- safe: drop if exists so repeated runs are idempotent
+
+This query executes inside PostgreSQL, but is **pushed down to ClickHouse**.
+
+---
+
+## Step 4 – Create CedarDB ingest table (no indexes)
+
+```sql
 DROP TABLE IF EXISTS uk_price_paid_ingest;
 
 CREATE TABLE uk_price_paid_ingest (
@@ -99,12 +193,13 @@ CREATE TABLE uk_price_paid_ingest (
     district TEXT,
     county TEXT
 );
-SQL
 ```
 
-# 5 - Stream ClickHouse → CedarDB using a single command (the meat)
+---
 
-```
+## Step 5 – Stream ClickHouse → CedarDB (zero intermediate files)
+
+```bash
 docker exec clickhouse_server \
   clickhouse-client --query "
     SELECT
@@ -125,48 +220,45 @@ docker exec clickhouse_server \
     FROM uk_price_paid
     FORMAT CSVWithNames
   " \
-| PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres -c "\copy uk_price_paid_ingest FROM STDIN WITH (FORMAT csv, HEADER true)"
+| PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres \
+  -c "\copy uk_price_paid_ingest FROM STDIN WITH (FORMAT csv, HEADER true)"
 ```
 
-Verify. This should return 30729146 rows  
+Verify:
 
-```
-docker exec -it \
-  -e PGPASSWORD=cedardbre \
-  cedardb_server \
-  psql -U postgres -d postgres \
+```bash
+PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres \
   -c "SELECT count(*) FROM uk_price_paid_ingest;"
 ```
 
+---
 
-# 6 - Create Postgres heap table + same dataset. 
+## Step 6 – Create PostgreSQL HEAP table
 
-```
-PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
--- safe: drop if exists so repeated runs are idempotent
+```sql
 DROP TABLE IF EXISTS uk_price_paid_pg;
 
 CREATE TABLE uk_price_paid_pg (
-    price     INTEGER NOT NULL,
-    date      DATE NOT NULL,
-    postcode1 VARCHAR(8) NOT NULL,      -- Being conservative for UK postcodes
-    postcode2 VARCHAR(4) NOT NULL,
-    type      VARCHAR(15) NOT NULL,     -- 'semi-detached' is longest at 13 chars
-    is_new    BOOLEAN NOT NULL,         -- Convert smallint to boolean
-    duration  VARCHAR(10) NOT NULL,     -- 'freehold', 'leasehold', 'unknown'
-    addr1     VARCHAR(200),
-    addr2     VARCHAR(200),
-    street    VARCHAR(200),
-    locality  VARCHAR(100),
-    town      VARCHAR(100) NOT NULL,
-    district  VARCHAR(100),
-    county    VARCHAR(100)
+    price INTEGER NOT NULL,
+    date DATE NOT NULL,
+    postcode1 VARCHAR(8),
+    postcode2 VARCHAR(4),
+    type VARCHAR(15),
+    is_new BOOLEAN,
+    duration VARCHAR(10),
+    addr1 VARCHAR(200),
+    addr2 VARCHAR(200),
+    street VARCHAR(200),
+    locality VARCHAR(100),
+    town VARCHAR(100),
+    district VARCHAR(100),
+    county VARCHAR(100)
 );
-SQL
 ```
 
-```
-PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+Populate from ClickHouse FDW:
+
+```sql
 INSERT INTO uk_price_paid_pg
 SELECT
     price,
@@ -174,7 +266,7 @@ SELECT
     postcode1,
     postcode2,
     type,
-    CASE WHEN is_new = 1 THEN true ELSE false END,  -- Convert to boolean
+    is_new = 1,
     duration,
     addr1,
     addr2,
@@ -184,78 +276,92 @@ SELECT
     district,
     county
 FROM uk_price_paid;
-SQL
 ```
 
-Verify. This should return 30729146 rows  
+---
 
-```
-docker exec -it \
-  -e PGPASSWORD=pgdbre \
-  pg18_clickhouse \
-  psql -U postgres -d postgres \
-  -c "SELECT count(*) FROM uk_price_paid_pg;"
-```
+## Step 7 – Indexing strategy
 
+### PostgreSQL HEAP
 
-Create index on postgres HEAP table... 
-```
-PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
--- Create optimal indexes for analytical queries
-CREATE INDEX idx_uk_price_paid_pg_date ON uk_price_paid_pg(date);
-CREATE INDEX idx_uk_price_paid_pg_town ON uk_price_paid_pg(town);
-CREATE INDEX idx_uk_price_paid_pg_type ON uk_price_paid_pg(type);
-CREATE INDEX idx_uk_price_paid_pg_postcode ON uk_price_paid_pg(postcode1, postcode2);
-CREATE INDEX idx_uk_price_paid_pg_date_type ON uk_price_paid_pg(date, type);
-CREATE INDEX idx_uk_price_paid_pg_town_date ON uk_price_paid_pg(town, date);
-CREATE INDEX idx_uk_price_paid_pg_type_date_price ON uk_price_paid_pg(type, date, price);
-CREATE INDEX idx_uk_price_paid_pg_county_type_date ON uk_price_paid_pg(county, type, date) WHERE county IS NOT NULL;
---- for aggregations
-CREATE INDEX idx_uk_price_paid_pg_county_town ON uk_price_paid_pg(county, town);
+```sql
+CREATE INDEX idx_pg_date ON uk_price_paid_pg(date);
+CREATE INDEX idx_pg_town ON uk_price_paid_pg(town);
+CREATE INDEX idx_pg_type ON uk_price_paid_pg(type);
+CREATE INDEX idx_pg_postcode ON uk_price_paid_pg(postcode1, postcode2);
+CREATE INDEX idx_pg_date_type ON uk_price_paid_pg(date, type);
+CREATE INDEX idx_pg_town_date ON uk_price_paid_pg(town, date);
+CREATE INDEX idx_pg_type_date_price ON uk_price_paid_pg(type, date, price);
+CREATE INDEX idx_pg_county_type_date ON uk_price_paid_pg(county, type, date)
+WHERE county IS NOT NULL;
 
--- Analyze for query planner
 ANALYZE uk_price_paid_pg;
-
--- Check the result
-SELECT COUNT(*) FROM uk_price_paid_pg;
-SQL
 ```
 
+### CedarDB
 
+```sql
+CREATE INDEX idx_cedar_date ON uk_price_paid_ingest(date);
+CREATE INDEX idx_cedar_town ON uk_price_paid_ingest(town);
+CREATE INDEX idx_cedar_type ON uk_price_paid_ingest(type);
+CREATE INDEX idx_cedar_date_type ON uk_price_paid_ingest(date, type);
+CREATE INDEX idx_cedar_town_date ON uk_price_paid_ingest(town, date);
 
-Create indexes on Cedar database... 
-```
-PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-CREATE INDEX IF NOT EXISTS idx_cedar_date ON uk_price_paid_ingest(date);
-CREATE INDEX IF NOT EXISTS idx_cedar_town ON uk_price_paid_ingest(town);
-CREATE INDEX IF NOT EXISTS idx_cedar_type ON uk_price_paid_ingest(type);
-CREATE INDEX IF NOT EXISTS idx_cedar_date_type ON uk_price_paid_ingest(date, type);
-CREATE INDEX IF NOT EXISTS idx_cedar_town_date ON uk_price_paid_ingest(town, date);
--- Analyze for query planner
 ANALYZE uk_price_paid_ingest;
-
--- Check the result
-SELECT COUNT(*) FROM uk_price_paid_ingest;
-SQL
 ```
 
-FINAL Count ... -> They should all retrun 30 million count.
-```
+---
+
+## Final Validation (must match)
+
+```bash
 # ClickHouse
-docker exec clickhouse_server \
-  clickhouse-client \
+docker exec clickhouse_server clickhouse-client \
   --query "SELECT count() FROM uk_price_paid"
 
 # CedarDB
 PGPASSWORD=cedardbre psql -h localhost -p 5433 -U postgres -d postgres \
   -c "SELECT count(*) FROM uk_price_paid_ingest;"
 
-# Postgres pg_clickhouse FDW
+# PostgreSQL + pg_clickhouse
 PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres \
   -c "SELECT count(*) FROM uk_price_paid;"
 
-# Postgres native HEAP table
+# PostgreSQL HEAP
 PGPASSWORD=pgdbre psql -h localhost -p 5434 -U postgres -d postgres \
   -c "SELECT count(*) FROM uk_price_paid_pg;"
+```
+
+Expected result everywhere:
 
 ```
+30729146
+```
+
+---
+
+## What this benchmark is NOT
+
+* ❌ Not a micro-benchmark
+* ❌ Not TPC-H / TPC-DS
+* ❌ Not engine-tuning competition
+* ❌ Not storage or compression comparison
+
+This lab focuses on **execution behavior** under realistic analytical workloads.
+
+---
+
+## Next steps (planned)
+
+* Query suite comparison
+* EXPLAIN / EXPLAIN ANALYZE diffs
+* Memory usage comparison
+* MVCC vs immutable storage analysis
+* Pushdown vs native execution cost
+
+---
+
+## Author
+
+Built by a practicing DBRE exploring **how execution engines behave in the real world**.
+
