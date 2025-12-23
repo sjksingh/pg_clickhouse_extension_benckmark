@@ -13,7 +13,7 @@ pg18_clickhouse     sjksingh/postgres-18-pgclickhouse-cedar:latest   "/custom-en
 
 # 1 - ingest data into clickhouse. 
 
-bash 1-lickhuse-ingest.sh
+bash 1-clickhouse-ingest.sh
 
 ```
 #!/bin/bash
