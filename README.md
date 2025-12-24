@@ -121,7 +121,7 @@ pg18_clickhouse
 
 ---
 
-## Step 1 – Check if ClickHouse baseline tables exists...
+## Step 1 – Check if ClickHouse base table exists...
 
 ```bash
 docker exec -it clickhouse_server \
