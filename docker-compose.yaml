@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: sjksingh/postgres-18-pgclickhouse-cedar:latest
+    container_name: pg18_clickhouse
+    environment:
+      POSTGRES_PASSWORD: pgdbre
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    depends_on:
+      - clickhouse
+    networks:
+      - pg_ch_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse_server
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native protocol
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: chidbre
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - pg_ch_network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cedardb:
+    image: cedardb/cedardb:latest  # Use official CedarDB image
+    container_name: cedardb_server
+    environment:
+      CEDAR_USER: postgres
+      CEDAR_PASSWORD: cedardbre
+    ports:
+      - "5433:5432"  # Map to 5433 to avoid collision with Postgres
+    volumes:
+      - cedardb_data:/cedardb/data
+      - ./cedar-init:/docker-entrypoint-initdb.d
+    networks:
+      - pg_ch_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  clickhouse_data:
+  cedardb_data:
+
+networks:
+  pg_ch_network:
+    driver: bridge
