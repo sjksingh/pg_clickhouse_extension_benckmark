@@ -99,6 +99,7 @@ Row count used throughout the lab:
 
 * Docker
 * Docker Compose
+* psql client 
 * ~15GB free disk
 * ~8GB RAM recommended
 
